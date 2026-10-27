@@ -1,6 +1,6 @@
 from scipy.differentiate import derivative
-from scipy.interpolate import CubicSpline, UnivariateSpline
-from scipy.integrate import solve_ivp, quad
+from scipy.interpolate import CubicSpline
+from scipy.integrate import solve_ivp, simpson
 import numpy as np
 
 def Vp(phi, lambdap):
@@ -134,7 +134,7 @@ def Solver(phi_0_guess, d, r_min, r_max, lambdap, r_eval):
     phi = sol.y[0]
     chi = sol.y[1]
     radial = sol.t
-    return radial, phi
+    return radial, phi, chi
 
 
 def Undershoot(phi):
@@ -186,13 +186,20 @@ def Bracket(lambdap,d, r_min, r_max, r_eval):
     phi_0_under = 0
     phi_guess = phi_0_under
     step = 0.01
+    i = 0
+    max_iter = 15000
     while Undershoot(Solver(phi_guess, d, r_min, r_max, lambdap, r_eval)[1]):
         phi_guess += step
         phi_0_over = phi_guess
+        i+=1
+        if i>max_iter:
+            raise ValueError("Bracket could not be determined")
+            break
     return phi_0_under, phi_0_over
 
 
-def shooting(d, lambdap, r_min, r_max, r_eval):
+
+def shooting(d, lambdap, r_min, r_max, r_eval, tol = 1e-4):
     """
     Solves for the bounce background.
     1) Determines the bracket values.
@@ -225,7 +232,7 @@ def shooting(d, lambdap, r_min, r_max, r_eval):
     """
     phi_0_under, phi_0_over = Bracket(lambdap, d, r_min, r_max, r_eval)
 
-    R, solution = None, None
+    R, solution, chi_val = None, None, None
 
     tolerance = 1e-10
     max_iterations = 1000
@@ -233,10 +240,11 @@ def shooting(d, lambdap, r_min, r_max, r_eval):
 
     while i < max_iterations:
         phi_0_guess = 0.5 * (phi_0_over + phi_0_under)
-        t, phi = Solver(phi_0_guess, d, r_min, r_max, lambdap, r_eval)
+        t, phi, chi = Solver(phi_0_guess, d, r_min, r_max, lambdap, r_eval)
 
         R = t
         solution = phi
+        chi_val = chi
 
         # Check for convergence
         if abs(phi_0_over - phi_0_under) < tolerance:
@@ -247,75 +255,34 @@ def shooting(d, lambdap, r_min, r_max, r_eval):
           phi_0_under = phi_0_guess
         else:
           phi_0_over = phi_0_guess
-
         i += 1
-    Test = Shooting_Test(d, lambdap, R, solution)
+    phi0 = phi_0_guess
+    Test, ind = virial_test(d, R, solution, chi_val, lambdap, tol)
+    phi = solution.copy()
+    phi[ind:] = 0.0
     if Test:
-        return R, solution, phi0
+        return R, phi, phi0
     else:
-        return None, None, None
-
-def Shooting_Test(d, lambdap, R, phi, tol=1e-3):
-    """
-    Determines if the shooting solution determined via the solver IS the solution ot the differential equation via the maximum residual
-    across the r domain. The edges, namerly r_min and r_max are dropped to avoid artifacts on the derivatives of phi.
-    If the maximal residual across the domain is lower than the set tolerance of 1e-3, the solution is accepted.
-
-    Parameters
-    ---------
-    lambdap: float
-        dim-less coupling
-    d: float
-        number of dimensions
-    R: dense output object
-        radial dense output array
-    phi: dense output object
-        bounce solution as dense output
-    tol: float
-        tolerance for test on residuals
-
-    Returns
-    ------
-    Test: Bool
-        True if test is passed, False if test is failed.
-    """ 
-   
-    phi_of_r = CubicSpline(R, phi)
-    phi_p = phi_of_r.derivative(1)
-    phi_pp = phi_of_r.derivative(2)
-
-    r_test = R[1:-1]          # drop edges
-    DE = -phi_pp(r_test) - (d-1)/r_test * phi_p(r_test) + Vp(phi_of_r(r_test), lambdap)
-
-    max_residual = float(np.max(np.abs(DE)))
-    Test = np.all(max_residual <= tol)
-    return Test
+        raise ValueError("Shooting Solution Failed")
 
 
-def clean_profile(r_eval, phi, threshold=1e-5):
-    """
-    To avoid large r artifacts, force the shooting solution to zero once a threshold close to zero is passed.
-    Bounce is monotonic, so it should decay to zero smoothly. Determines the index at which the threshold is crossed
-    and sets all values thereafter to zero.
-
-    Parameters
-    ----------
-    r_eval: ndarray
-        array of radial coordinates.
-    phi: Spline object
-        Continuous bounce solution.
-
-    Returns
-    -------
-    phi(r), the bounce evaluated on the points of r_eval.
-    """
-    phi = phi(r_eval)
+def virial_test(d, r, phi, chi, lambdap, tol):
+    #Determine where the conditions on shooting solution are broken: overshoot/turn-over
+    bad = np.where((phi<=0) | (chi>= 0))[0]
+    #extract the index at which it occurs (if it does)
+    ind = bad[0] if len(bad) else len(r)
+    #define the new variables require for virial test
+    R, P, C = r[:ind], phi[:ind], chi[:ind]
+    #Kinetic term of virial:
+    T = simpson(R**(d-1) * C**2 * 0.5, x = R)
+    #Define the potential:
+    def V(phi, lam):
+        return phi**2 * 0.5 - phi**3/6 + phi**4 * lam/24
+    #Potential energy term
+    W = simpson(R**(d-1) * V(P, lambdap), x = R)
     
-    # Find the index where the field first drops below the threshold
-    idx = np.where(np.abs(phi) < threshold)[0]
-    if len(idx) > 0:
-
-        first_zero_idx = idx[0]
-        # Force the field to zero from that point onward
-        phi[first_zero_idx:] = 0
-    return phi
+    #Use the modified virial theorem test:
+    Value = (abs(((d-2)*T + d* W)/T) <=tol)
+    return Value, ind
+    
+ 
