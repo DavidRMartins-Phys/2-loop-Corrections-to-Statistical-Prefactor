@@ -199,6 +199,92 @@ def Bracket(lambdap,d, r_min, r_max, r_eval):
 
 
 
+def shooting_test(d, lambdap, r_min, r_max, r_eval, tol = 1e-4, tolerance = 1e-10):
+    """
+    Solves for the bounce background.
+    1) Determines the bracket values.
+    2) Initialises the radial (R) and solution (solution) arrays with None. Ensures that the loop breaks if a solution is found.
+    3) In the while loop, take the bisection of the bracket value. Determine if the given phi_0_guess under- or over-shoots.
+        a) If overshoot: replace the upper bracket value with the phi_0_guess suggested.
+        b) If undershoot: replace the lower bracket value with the phi_0_guess suggested.
+    4) Repeat until the overshoot and undershoot values in the update bracket match to within tolerance.
+    5) Test the solution found. If the test is passed the solution is accepted.
+
+     Parameters
+    ----------
+    lambdap: float
+        dim-less coupling
+    d: float
+        number of dimensions
+    r_min, r_max: floats
+        upper and lower radial bounds for the integrator.
+    r_eval: ndarray
+        array from r_min to r_max of N datapoints.
+    
+    Returns
+    -------
+    R: dense output object
+        radial array
+    solution: dense output object
+        phi(r)
+    phi0: 
+        value of the bounce at r=0
+    """
+    phi_0_under, phi_0_over = Bracket(lambdap, d, r_min, r_max, r_eval)
+
+    R, solution, chi_val = None, None, None
+
+    #tolerance = 1e-10
+    max_iterations = 1000
+    i = 0
+
+    while i < max_iterations:
+        phi_0_guess = 0.5 * (phi_0_over + phi_0_under)
+        t, phi, chi = Solver(phi_0_guess, d, r_min, r_max, lambdap, r_eval)
+
+        R = t
+        solution = phi
+        chi_val = chi
+
+        # Check for convergence
+        if abs(phi_0_over - phi_0_under) < tolerance:
+          phi0 = phi_0_guess
+          break
+
+        if Undershoot(phi):
+          phi_0_under = phi_0_guess
+        else:
+          phi_0_over = phi_0_guess
+        i += 1
+    phi0 = phi_0_guess
+    Test, ind = virial_test(d, R, solution, chi_val, lambdap, tol)
+    phi = solution.copy()
+    phi[ind:] = 0.0
+    if Test:
+        return R, phi, phi0, ind
+    else:
+        raise ValueError("Shooting Solution Failed")
+
+
+def virial_test(d, r, phi, chi, lambdap, tol):
+    #Determine where the conditions on shooting solution are broken: overshoot/turn-over
+    bad = np.where((phi<=0) | (chi>= 0))[0]
+    #extract the index at which it occurs (if it does)
+    ind = bad[0] if len(bad) else len(r)
+    #define the new variables require for virial test
+    R, P, C = r[:ind], phi[:ind], chi[:ind]
+    #Kinetic term of virial:
+    T = simpson(R**(d-1) * C**2 * 0.5, x = R)
+    #Define the potential:
+    def V(phi, lam):
+        return phi**2 * 0.5 - phi**3/6 + phi**4 * lam/24
+    #Potential energy term
+    W = simpson(R**(d-1) * V(P, lambdap), x = R)
+    
+    #Use the modified virial theorem test:
+    Value = (abs(((d-2)*T + d* W)/T) <=tol)
+    return Value, ind
+    
 def shooting(d, lambdap, r_min, r_max, r_eval, tol = 1e-4):
     """
     Solves for the bounce background.
@@ -264,25 +350,4 @@ def shooting(d, lambdap, r_min, r_max, r_eval, tol = 1e-4):
         return R, phi, phi0
     else:
         raise ValueError("Shooting Solution Failed")
-
-
-def virial_test(d, r, phi, chi, lambdap, tol):
-    #Determine where the conditions on shooting solution are broken: overshoot/turn-over
-    bad = np.where((phi<=0) | (chi>= 0))[0]
-    #extract the index at which it occurs (if it does)
-    ind = bad[0] if len(bad) else len(r)
-    #define the new variables require for virial test
-    R, P, C = r[:ind], phi[:ind], chi[:ind]
-    #Kinetic term of virial:
-    T = simpson(R**(d-1) * C**2 * 0.5, x = R)
-    #Define the potential:
-    def V(phi, lam):
-        return phi**2 * 0.5 - phi**3/6 + phi**4 * lam/24
-    #Potential energy term
-    W = simpson(R**(d-1) * V(P, lambdap), x = R)
-    
-    #Use the modified virial theorem test:
-    Value = (abs(((d-2)*T + d* W)/T) <=tol)
-    return Value, ind
-    
  
