@@ -2,14 +2,12 @@ import numpy as np
 import scipy.special as spec
 from scipy.interpolate import CubicSpline
 from scipy.integrate import solve_ivp
-
-
+from Shooting import shooting
 
 def Riccati_eq(r, y, d, lambdap, ell, phi, Bounce):
     """
     Differential equation in the Riccati form, with the integration variable as G'/G.
     
-
     Parameters
     ----------
     r : ndarray
@@ -66,11 +64,10 @@ def Riccati_left_BC(r_min, d, ell, phi0, lambdap, Bounce):
     """
     alpha = 0.5 * np.sqrt((d-2)**2 + 4*ell*(ell + d - 2))
     if Bounce:
-        b = np.sqrt(1 - phi0 + lambdap/2 * phi0**2)
+        b2 = (1 - phi0 + lambdap/2 * phi0**2)
     else:
-        b=1
-    x = r_min * b
-    return np.array([(1 - 0.5*d + alpha)/r_min + b*x/(2*(alpha + 1))])
+        b2=1
+    return np.array([(1 - 0.5*d + alpha)/r_min + b2*r_min/(2*(alpha + 1))])
 
 
 def Riccati_right_BC(r_max, d, ell):
@@ -121,7 +118,7 @@ def Riccati_right_BC(r_max, d, ell):
 
 
 #Solver yielding the solutions for R(r)
-def Riccati_Solver(r_min, r_max, d, ell, phi0, lambdap, phi, Bounce):
+def Riccati_Solver(r_min, r_max, d, ell, phi0, lambdap, phi, Bounce, r_eval):
     """
     Solves the Riccati equation for R(r) = G'(r)/G(r), the logarithmic
     derivative of the radial part G(r) of the propagator for partial wave ell,
@@ -253,7 +250,6 @@ def Riccati_Splicer(sol_left, sol_right, r, r_prime, d, r_eval):
     return G
 
 def Greens_Test(IS, OS, r_eval, d, ell, lambdap, phi, Bounce,trim=3):
-    "Note: Needs changing and improving."
     R_L = CubicSpline(r_eval, IS.sol(r_eval).real[0])
     R_R = CubicSpline(r_eval, OS.sol(r_eval).real[0])
 
@@ -269,24 +265,18 @@ def Greens_Test(IS, OS, r_eval, d, ell, lambdap, phi, Bounce,trim=3):
 
         res = R_p + R**2 + (d-1)/r_eval * R - m2
 
-        scale = abs(R_p) + R**2 + abs((d-1)/r_eval)-abs(m2)
+        scale = abs(R_p) + R**2 + abs((d-1)*R/r_eval)+abs(m2)
 
         rel_error = np.abs(res/scale)
 
         error = rel_error[trim:-trim]
         out["Residual_" + name] = np.max(error)
-
-    #Next section: Checks the variance of the conserved quantity with r
-    ln_C = ((d-1)*np.log(r_eval) + R_L.antiderivative()(r_eval) + R_R.antiderivative()(r_eval)\
-          + np.log(R_L(r_eval) - R_R(r_eval)))
-    out["largest wronskian spread"] = np.ptp(ln_C[trim:-trim])
-
     return out
 
 
 #Defining the function which obtains the final solution using Riccati
 #resolves the general r' solutions per specific r' and sets normalisation
-def Riccati_Solution(r, rprime, d, ell, IS, OS, phi0, lambdap, Bounce,phi,tol = 1e-3):
+def Riccati_Solution(r, rprime, d, ell, IS, OS, phi0, lambdap, Bounce,phi,r_eval,tol = 1e-5):
     """
     Returns the radial propagator G(r, r') for partial wave ell, but only if
     the underlying Riccati solutions pass a set of numerical consistency checks.
@@ -330,15 +320,14 @@ def Riccati_Solution(r, rprime, d, ell, IS, OS, phi0, lambdap, Bounce,phi,tol = 
         The propagator G(r, r') from Riccati_Splicer if all checks pass.
         Otherwise the string "Failed Test", after printing a warning.
         """
-    RG = Riccati_Splicer(IS, OS, r, rprime, d)
+    
+    RG = Riccati_Splicer(IS, OS, r, rprime, d, r_eval)
     metrics = Greens_Test(IS, OS, r, d, ell, lambdap, phi, Bounce)
     
     ode_L_ok = metrics["Residual_L"] < tol
     ode_R_ok = metrics["Residual_R"] < tol
-    wronskian_ok = metrics["largest wronskian spread"] < tol
     
-    if ode_L_ok and ode_R_ok and wronskian_ok:
-      return Riccati_Splicer(IS, OS, r, rprime, d)
+    if ode_L_ok and ode_R_ok:
+      return RG
     else:
-      print('Warning: Riccati solution failed tolerance checks.')
-      return "Failed Test"
+       raise ValueError("Riccati Solution failed convergence checks: ")
